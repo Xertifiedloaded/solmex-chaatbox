@@ -7,7 +7,6 @@ dotenv.config()
 const { PrismaClient } = pkg
 const prisma = new PrismaClient()
 
-
 const getOrigin = () => {
   if (process.env.NEXT_PUBLIC_APP_URL) {
     return process.env.NEXT_PUBLIC_APP_URL
@@ -18,20 +17,37 @@ const getOrigin = () => {
 }
 
 const server = createServer((req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", getOrigin())
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+  res.setHeader("Access-Control-Allow-Credentials", "true")
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204)
+    res.end()
+    return
+  }
+
   if (req.url === "/health") {
     res.writeHead(200)
     res.end("OK")
     return
   }
+
   res.writeHead(404)
   res.end()
 })
 
 const io = new SocketIOServer(server, {
+  // ✅ Full CORS config for Socket.IO
   cors: {
     origin: getOrigin(),
     methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   },
+  // ✅ Allow both transports
+  transports: ["websocket", "polling"],
 })
 
 const adminConnections = new Map()
