@@ -1,122 +1,69 @@
-import { createServer } from "http"
-import { Server as SocketIOServer } from "socket.io"
-import pkg from "@prisma/client"
-import dotenv from "dotenv"
+const express = require('express')
+const http = require('http')
+const { Server } = require('socket.io')
+const cors = require('cors')
 
-dotenv.config()
-const { PrismaClient } = pkg
-const prisma = new PrismaClient()
+const app = express()
+app.use(cors())
+app.use(express.json())
 
-const getOrigin = () => {
-  if (process.env.NEXT_PUBLIC_APP_URL) {
-    return process.env.NEXT_PUBLIC_APP_URL
-  }
-  return process.env.NODE_ENV !== "production"
-    ? "http://localhost:3000"
-    : "https://solmex.live"
-}
-
-const server = createServer((req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", getOrigin())
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
-  res.setHeader("Access-Control-Allow-Credentials", "true")
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204)
-    res.end()
-    return
-  }
-
-  if (req.url === "/health") {
-    res.writeHead(200)
-    res.end("OK")
-    return
-  }
-
-  res.writeHead(404)
-  res.end()
-})
-
-const io = new SocketIOServer(server, {
-  // ✅ Full CORS config for Socket.IO
+const server = http.createServer(app)
+const io = new Server(server, {
   cors: {
-    origin: getOrigin(),
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
+      origin: [
+      'http://localhost:3000',   
+      'http://localhost:5173',  
+      'https://solmex.live',     
+      'https://solmex-chaatbox.onrender.com' 
+    ],
+    methods: ['GET', 'POST'],
   },
-  // ✅ Allow both transports
-  transports: ["websocket", "polling"],
 })
 
-const adminConnections = new Map()
-const customerConnections = new Map()
+const conversations = {} 
 
-io.on("connection", (socket) => {
-  console.log(`[Socket.IO] New connection: ${socket.id}`)
+io.on('connection', (socket) => {
+  console.log('New socket connected:', socket.id)
 
-  socket.on("join", (customerId) => {
-    console.log(`[Socket.IO] Customer ${customerId} joined`)
+  socket.on('join', (customerId) => {
     socket.join(customerId)
-    customerConnections.set(customerId, socket.id)
-    io.emit("customer-online", { customerId })
+    console.log(`Customer joined room: ${customerId}`)
+    socket.emit('previous-messages', conversations[customerId] || [])
   })
 
-  socket.on("admin-join", () => {
-    console.log(`[Socket.IO] Admin joined`)
-    adminConnections.set(socket.id, true)
-    socket.emit("active-customers", Array.from(customerConnections.keys()))
+  socket.on('admin-join', () => {
+    socket.join('admin-room')
+    console.log('Admin joined admin-room')
+    socket.emit('all-conversations', conversations)
   })
 
-  socket.on("send-message", async ({ customerId, text, sender }) => {
-    try {
-      let conversation = await prisma.conversation.findFirst({
-        where: { customerId },
-      })
+  socket.on('send-message', (msg) => {
+    const { customerId } = msg
+    if (!conversations[customerId]) conversations[customerId] = []
 
-      if (!conversation) {
-        conversation = await prisma.conversation.create({
-          data: { customerId },
-        })
-      }
-
-      const message = await prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          sender,
-          text,
-        },
-      })
-
-      io.to(customerId).emit("receive-message", message)
-      io.emit("admin-update")
-    } catch (error) {
-      console.error("[Socket.IO] Error:", error)
-      socket.emit("error", { message: "Failed to send message" })
+    const isDuplicate = conversations[customerId].some((m) => m.id === msg.id)
+    if (!isDuplicate) {
+      conversations[customerId].push(msg)
     }
+
+
+    io.to('admin-room').emit('receive-message', msg)
+    io.to(customerId).emit('receive-message', msg)
   })
 
-  socket.on("disconnect", () => {
-    console.log(`[Socket.IO] Disconnected: ${socket.id}`)
-    adminConnections.delete(socket.id)
-    for (const [customerId, socketId] of customerConnections.entries()) {
-      if (socketId === socket.id) {
-        customerConnections.delete(customerId)
-        io.emit("customer-offline", { customerId })
-        break
-      }
+  socket.on('admin-send-message', (msg) => {
+    const { customerId } = msg
+    if (!conversations[customerId]) conversations[customerId] = []
+    const isDuplicate = conversations[customerId].some((m) => m.id === msg.id)
+    if (!isDuplicate) {
+      conversations[customerId].push(msg)
     }
+
+    io.to(customerId).emit('receive-message', msg)
+    io.to('admin-room').emit('receive-message', msg)
   })
 })
 
-const PORT = parseInt(process.env.PORT || "4000", 10)
-
-server.listen(PORT, () => {
-  console.log(`✓ Socket.IO server running on port ${PORT}`)
-})
-
-process.on("SIGTERM", async () => {
-  await prisma.$disconnect()
-  process.exit(0)
+server.listen(5000, () => {
+  console.log('Socket.IO server running on port 5000')
 })
